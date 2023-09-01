@@ -97,6 +97,11 @@ sbatch -a 1-3 array.sub
 ```
 
 ## Author:
-   Lev Gorenstein, Rosen Center for Advanced Computing, Purdue University, 2021.
 
-   Contribute: https://github.com/lgorenstein/longest-job
+Lev Gorenstein, Rosen Center for Advanced Computing, Purdue University, 2021.
+
+Contribute: https://github.com/lgorenstein/longest-job
+
+## More to like:
+
+You might find the `jobinfo` tool from https://github.com/birc-aeh/slurm-utils repository handy for a nice summary of job state.
