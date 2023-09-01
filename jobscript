@@ -1,0 +1,171 @@
+#!/bin/bash
+#
+# For each argument JobID, prints submission script for the job.
+# Exit status of 0 if succeeded for all JobIDs, 1 otherwise.
+#
+# This script relies on Slurm's built-in feature of storing job scripts
+# in the accounting database (this is not on by default, so need to set
+# 'AccountingStoreFlags = job_script' in your slurm.conf).
+#
+# Caveats:
+#   * Requires Slurm 21.08 or newer (but currently no checking);
+#   * Must be enabled by a parameter in slurm.conf (but currently no checking).
+#
+# Lev Gorenstein <lev@purdue.edu>, 2021
+
+VERSION="0.2.1" 			# Increment me!
+PROGNAME=${BASH_SOURCE##*/}
+
+# Safety and sanity
+set -o pipefail
+export PATH="/bin:/usr/bin:/usr/local/bin"
+
+# Helper functions
+function usage() {
+    echo "Usage: ${PROGNAME} [-h|--help] [-r|--raw] JobID(s)"
+}
+
+function help_message() {
+    # Yes, I don't like the '<<-' form, so indentation is somewhat off
+    cat << _EOF_
+$PROGNAME ver. $VERSION - show Slurm job's submission script.
+
+For each argument JobID, prints submission script for that job.
+
+$(usage)
+
+Options:
+   -r, --raw      Show underlying sacct output as is (default is to trim
+                  extra separator lines sacct adds). This is better for
+                  looking up multiple jobs at once.
+
+   -v, --verbose  Be verbose (show underlying 'sacct' commands on stderr).
+   -V, --version  Print program version and exit.
+   -h, --help     Display this help message and exit.
+
+Essentially, this program is just a glorified wrapper for:
+     sacct --batch-script -j JobID
+in a loop (because it's just easier to type '$PROGNAME NNNN').
+
+For interactive jobs returned "script" value is 'NONE'.
+Exit status of 0 if succeeded for all JobIDs, 1 otherwise.
+
+Note: for array jobs (not explicit array elements XXX_YY), underlying
+'sacct' returns the same array script repeated for however many array
+elements there was.  This feels like a bug (because all elements of an
+array use the same script), and perhaps will be fixed by SchedMD later.
+In any case, this repetition is hardly what the user wants, so we only
+show one such script by default (but do show everyting in '--raw' mode).
+
+Note that this script relies on Slurm's built-in feature of storing
+job scripts in the accounting database, so:
+  a) Requires Slurm 21.08 or newer;
+  b) The feature must be enabled with 'AccountingStoreFlags = job_script'
+     in your slurm.conf (it is not on by default).
+  c) You probably want to watch your databaze size a little more closely.
+     Use a new slurm.conf setting 'SchedulerParameters = max_script_size=###'
+     (in bytes) to control allowed script sizes. Default value is 4 megabytes
+     if not set.
+
+Author:
+  Lev Gorenstein (Purdue University Research Computing) <lev@purdue.edu>, 2021
+_EOF_
+
+    echo ""
+}
+
+
+function warn() {
+    echo -e "$*" 1>&2
+}
+
+# Parse command line
+# Note: relies on 'getopt' (a drop-in powerful replacement for 'getopts').
+# AFAIK, it is part of any modern Linux distribution, so no further checking.
+raw=0
+verbo=0
+SHORTOPTS="rvVh"
+LONGOPTS="raw,verbose,version,help"
+if ! TEMP=$(getopt -o "$SHORTOPTS" --long "$LONGOPTS" -- "$@"); then
+    usage; exit 1
+fi
+eval set -- "$TEMP"
+while true; do
+    case "$1" in
+        -r|--raw)
+            raw=1; shift ;;
+        -v|--verbose)
+            verbo=1; shift ;;
+        -V | --version)
+            echo "$PROGNAME ver. $VERSION"; exit 0 ;;
+        -h|--help)
+            help_message; exit 0 ;;
+        --) shift ; break ;;
+        *) warn "$PROGNAME: Internal error ('$1' encountered)"; exit 1 ;;
+    esac
+done
+
+# Actual work
+rc_all=0
+for JOB in "$@"; do
+    # Query accounting database and save output into an array.
+    rc=0
+    if [[ $verbo -gt 0 ]]; then
+        warn "# /usr/bin/sacct -j $JOB --batch-script"
+    fi
+    if ! readarray -t RAW < <(/usr/bin/sacct -j $JOB --batch-script); then
+        rc=1
+        rc_all=1
+    fi
+
+    # Normally the output would be along the lines of:
+    #    Batch Script for 55
+    #    ----------------------------------------------------------
+    #    #!/bin/bash
+    #    [....]
+    # Or for interactive jobs:
+    #    Batch Script for 55
+    #    ----------------------------------------------------------
+    #    NONE
+    # And a trailing empty line afterwards. So we should get at least 4 lines.
+    nlines=${#RAW[@]}
+    if [[ $nlines -lt 4 || $rc -ne 0 ]]; then
+	echo "No script found for jobid $JOB"
+        rc_all=1
+        continue
+    fi
+
+    # Catch: for array jobs (not explicit array elements XXX_YY), above
+    # 'sacct' returns the same array script repeated for however many array
+    # elements there was. This is hardly what the user wants, so filter out
+    # duplicates by default (but do show everyting in '--raw' mode).
+    pattern="^Batch Script for ${JOB}_"
+    readarray -t FILTERED < <(printf "%s\n" "${RAW[@]}" \
+                                | sed -ne "1,/${pattern}/p" )
+    if [[ $raw -eq 0 && $nlines -gt ${#FILTERED[@]} ]]; then
+        # Looks like there were duplicates in sacct output (and we got
+        # first copy in the FILTERED array).  Now need to remove the last
+        # line from FILTERED (because the pattern matched at the tail).
+        unset FILTERED[-1]
+    fi
+
+    # As weird as it sounds, sometimes user scripts can have [noeol] on the
+    # very last line.  When this happens, the extra empty line that sacct
+    # adds gets consumed (to terminate the noeol unfinished line).
+    # Check and fix if necessary.
+    if [[ "${FILTERED[-1]}" != "" ]]; then
+        FILTERED+=( "" )
+    fi
+
+
+    # Finally, print what we got. Failure mode already handled.
+    if [[ $raw -ne 0 ]]; then
+        printf "%s\n" "${RAW[@]}"
+    else
+        # Skip two introductory lines, and drop the trailing blank one.
+        nfilt=${#FILTERED[@]}
+        printf "%s\n" "${FILTERED[@]:2:$((nfilt - 3))}"
+    fi
+
+done
+exit $rc_all

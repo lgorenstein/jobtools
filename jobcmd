@@ -1,0 +1,156 @@
+#!/bin/bash
+#
+# For each argument JobID, prints complete submission command line for the job.
+# Exit status of 0 if succeeded for all JobIDs, 1 otherwise.
+#
+# This script relies on Slurm's built-in feature of storing job command lines
+# in the accounting database (this is not on by default, so need to set
+# 'AccountingStoreFlags = job_comment' in your slurm.conf).
+#
+# Caveats:
+#   * Requires Slurm 21.08 or newer (but currently no checking);
+#   * Must be enabled by a parameter in slurm.conf (but currently no checking).
+#
+# Lev Gorenstein <lev@purdue.edu>, 2021
+
+VERSION="0.2.0" 			# Increment me!
+PROGNAME=${BASH_SOURCE##*/}
+
+# Safety and sanity
+set -o pipefail
+export PATH="/bin:/usr/bin:/usr/local/bin"
+
+# Helper functions
+function usage() {
+    echo "Usage: ${PROGNAME} [-h|--help] [-r|--raw] JobID(s)"
+}
+
+function help_message() {
+    # Yes, I don't like the '<<-' form, so indentation is somewhat off
+    cat << _EOF_
+$PROGNAME ver. $VERSION - show Slurm job's submission command.
+
+For each argument JobID, prints complete submission command line for that job.
+
+$(usage)
+
+Options:
+   -r, --raw      Show underlying sacct output as is (default is to trim
+                  extra separator lines sacct adds, and only show one line
+                  for job arrays).
+
+   -v, --verbose  Be verbose (show underlying 'sacct' commands on stderr).
+   -V, --version  Print program version and exit.
+   -h, --help     Display this help message and exit.
+
+Essentially, this program is just a glorified wrapper for:
+     sacct -o SubmitLine -P [-X] -j JobID
+in a loop (because it's just easier to type '$PROGNAME NNNN').
+
+Please note that this tool is intentionally pretty simplistic and the
+'--raw' mode is not as helpful as it seems.  This script solves 99% cases
+HPC user support faces (quick lookup for couple jobs), but for the
+remaining 1% it is not a substitute for a full-blown
+     sacct -P -o JobID,AllocTRES,SubmitLine -j JobID
+
+Exit status of 0 if succeeded for all JobIDs, 1 otherwise.
+
+Note that this script relies on Slurm's built-in feature of storing
+job command lines as comments in the accounting database, so:
+  a) Requires Slurm 21.08 or newer;
+  b) The feature must be enabled with 'AccountingStoreFlags = job_comment'
+     in your slurm.conf (it is not on by default).
+
+Author:
+  Lev Gorenstein (Purdue University Research Computing) <lev@purdue.edu>, 2021
+_EOF_
+
+    echo ""
+}
+
+
+function warn() {
+    echo -e "$*" 1>&2
+}
+
+# Parse command line
+# Note: relies on 'getopt' (a drop-in powerful replacement for 'getopts').
+# AFAIK, it is part of any modern Linux distribution, so no further checking.
+raw=0
+verbo=0
+SHORTOPTS="rvVh"
+LONGOPTS="raw,verbose,version,help"
+if ! TEMP=$(getopt -o "$SHORTOPTS" --long "$LONGOPTS" -- "$@"); then
+    usage; exit 1
+fi
+eval set -- "$TEMP"
+while true; do
+    case "$1" in
+        -r|--raw)
+            raw=1; shift ;;
+        -v|--verbose)
+            verbo=1; shift ;;
+        -V | --version)
+            echo "$PROGNAME ver. $VERSION"; exit 0 ;;
+        -h|--help)
+            help_message; exit 0 ;;
+        --) shift ; break ;;
+        *) warn "$PROGNAME: Internal error ('$1' encountered)"; exit 1 ;;
+    esac
+done
+
+# Actual work
+rc_all=0
+for JOB in "$@"; do
+    # We may need to query the the allocation or specific job step depending
+    # on the supplied JobID.  For "normal" jobs ('123') and job array elements
+    # ('123_4'), need to query the allocation ('-X') to avoid extraneous
+    # output for additional steps and extents.  For job steps ('123.4')
+    # query specific step, not the overall job (no '-X').
+    alloc="-X"
+    if [[ "$JOB" == *.* ]]; then
+        alloc=""
+    fi
+
+    # Query accounting database and save output into an array.
+    rc=0
+    if [[ $verbo -gt 0 ]]; then
+        warn "# /usr/bin/sacct -j $JOB $alloc -P -o SubmitLine"
+    fi
+    if ! readarray -t RAW < <(/usr/bin/sacct -j $JOB $alloc -P -o SubmitLine); then
+        rc=1
+        rc_all=1
+    fi
+
+    # Normally the output would be along the lines of:
+    #    SubmitLine
+    #    sbatch myscript.sh
+    # For array jobs (not specific array elements), entries will be repeated:
+    #    SubmitLine
+    #    sbatch --array 1-3 myscript.sh
+    #    sbatch --array 1-3 myscript.sh
+    #    sbatch --array 1-3 myscript.sh
+    # So we should get at least 2 lines, and we'd normally need the second one.
+    nlines=${#RAW[@]}
+    if [[ $nlines -lt 2 || $rc -ne 0 ]]; then
+        echo "No submission command found for jobid $JOB"
+        rc_all=1
+        continue
+    fi
+
+    # Catch: for array jobs (not explicit array elements XXX_YY), above
+    # 'sacct' returns identical command lines for each array element.  While
+    # this is technically correct, this is hardly what the user typically
+    # wants, so filter out duplicates by default (but do show everyting in
+    # '--raw' mode).
+    FILTERED=( "${RAW[@]:0:2}" )
+
+    # Finally, print what we got. Failure mode already handled.
+    if [[ $raw -ne 0 ]]; then
+        printf "%s\n" "${RAW[@]}"
+    else
+        printf "%s\n" "${FILTERED[@]:1:1}"
+    fi
+
+done
+exit $rc_all
