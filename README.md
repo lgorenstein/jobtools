@@ -98,7 +98,8 @@ sbatch -a 1-3 array.sub
 
 ## Author:
 
-Lev Gorenstein, Rosen Center for Advanced Computing, Purdue University, 2021.
+Lev Gorenstein, Rosen Center for Advanced Computing, Purdue University, 2021-2023.
+Please note that as of September 2023 I am no longer affiliated with Purdue University.
 
 Contribute: https://github.com/lgorenstein/jobtools
 
