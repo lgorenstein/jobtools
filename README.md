@@ -100,7 +100,7 @@ sbatch -a 1-3 array.sub
 
 Lev Gorenstein, Rosen Center for Advanced Computing, Purdue University, 2021.
 
-Contribute: https://github.com/lgorenstein/longest-job
+Contribute: https://github.com/lgorenstein/jobtools
 
 ## More to like:
 
